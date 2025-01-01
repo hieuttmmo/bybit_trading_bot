@@ -1,0 +1,6 @@
+{
+    "use_testnet": true,
+    "leverage": 20,
+    "balance_percentage": 0.1,
+    "active_api": "testnet"
+}
