@@ -1,0 +1,15 @@
+[Unit]
+Description=Bybit Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bybit_trading_bot
+Environment=PATH=/home/ubuntu/bybit_trading_bot/venv/bin
+ExecStart=/home/ubuntu/bybit_trading_bot/venv/bin/python telegram_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 
