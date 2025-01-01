@@ -1,0 +1,4 @@
+-r base.txt
+
+# AWS Lambda specific
+requests==2.31.0 

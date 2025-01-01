@@ -2,6 +2,33 @@
 
 A Telegram-based trading bot for Bybit cryptocurrency exchange, supporting both testnet and mainnet environments.
 
+## Project Structure
+
+```
+bybit_trading_bot/
+├── src/                    # Source code
+│   ├── bot/               # Bot implementation
+│   │   ├── trading.py     # Trading logic
+│   │   ├── telegram.py    # Telegram interface
+│   │   └── config.py      # Configuration management
+│   └── utils/             # Utility functions
+├── deploy/                # Deployment configurations
+│   ├── aws/              # AWS Lambda deployment
+│   │   ├── lambda_function.py
+│   │   ├── serverless.yml
+│   │   └── set_webhook.py
+│   └── server/           # Traditional server deployment
+│       ├── bybit_bot.service
+│       └── deploy.sh
+├── config/               # Configuration files
+│   ├── .env.example
+│   └── bot_config.json
+└── requirements/         # Dependencies
+    ├── base.txt         # Common requirements
+    ├── dev.txt          # Development requirements
+    └── prod.txt         # Production requirements
+```
+
 ## Features
 
 - Telegram bot interface for easy trading
@@ -30,27 +57,58 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install dependencies:
 ```bash
-pip install -r requirements.txt
+# For development:
+pip install -r requirements/dev.txt
+
+# For production:
+pip install -r requirements/prod.txt
 ```
 
-4. Create a `.env` file with your configuration:
-```env
-# Telegram Bot Configuration
-TELEGRAM_TOKEN=your_telegram_bot_token
-ALLOWED_TELEGRAM_USERS=your_telegram_user_id
+4. Create a `.env` file in the config directory:
+```bash
+cp config/.env.example config/.env
+# Edit config/.env with your configuration
+```
 
-# Bybit API Configuration
-TESTNET_API_KEY=your_testnet_api_key
-TESTNET_API_SECRET=your_testnet_api_secret
-MAINNET_API_KEY=your_mainnet_api_key
-MAINNET_API_SECRET=your_mainnet_api_secret
+## Deployment Options
+
+### 1. AWS Lambda (Serverless)
+
+1. Install Serverless Framework:
+```bash
+npm install -g serverless
+npm install --save-dev serverless-python-requirements
+```
+
+2. Deploy:
+```bash
+cd deploy/aws
+serverless deploy
+```
+
+3. Set up webhook:
+```bash
+python set_webhook.py https://your-api-url/dev/webhook
+```
+
+### 2. Traditional Server
+
+1. Copy service file:
+```bash
+sudo cp deploy/server/bybit_bot.service /etc/systemd/system/
+```
+
+2. Deploy:
+```bash
+cd deploy/server
+./deploy.sh
 ```
 
 ## Usage
 
-1. Start the bot:
+1. Start the bot (for local development):
 ```bash
-python telegram_bot.py
+python -m src.bot.telegram
 ```
 
 2. Open your Telegram client and start chatting with the bot.
@@ -81,7 +139,7 @@ The bot supports various configuration options through the Telegram interface:
 
 ## Security
 
-- Never share your `.env` file
+- Never share your `config/.env` file
 - Keep your API keys secure
 - Use testnet for testing
 - Set appropriate API key permissions in Bybit

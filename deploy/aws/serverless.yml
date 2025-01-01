@@ -1,0 +1,51 @@
+service: bybit-trading-bot
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: ap-southeast-1  # Change to your preferred region
+  timeout: 30
+  environment:
+    TELEGRAM_TOKEN: ${env:TELEGRAM_TOKEN}
+    ALLOWED_TELEGRAM_USERS: ${env:ALLOWED_TELEGRAM_USERS}
+    TESTNET_API_KEY: ${env:TESTNET_API_KEY}
+    TESTNET_API_SECRET: ${env:TESTNET_API_SECRET}
+    MAINNET_API_KEY: ${env:MAINNET_API_KEY}
+    MAINNET_API_SECRET: ${env:MAINNET_API_SECRET}
+
+functions:
+  webhook:
+    handler: lambda_function.lambda_handler
+    events:
+      - http:
+          path: webhook
+          method: post
+          cors: true
+
+package:
+  patterns:
+    - '!**'
+    - '*.py'
+    - 'requirements.txt'
+    - '!deploy.sh'
+    - '!bybit_bot.service'
+    - '!.env*'
+    - '!venv/**'
+    - '!__pycache__/**'
+    - '!.git/**'
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    layer:
+      name: python-deps
+      description: Python dependencies for Bybit Trading Bot
+    noDeploy:
+      - pytest
+      - pytest-cov
+      - pytest-env
+      - pytest-mock 

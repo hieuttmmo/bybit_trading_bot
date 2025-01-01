@@ -4,7 +4,7 @@ import re
 from typing import List, Tuple
 from decimal import Decimal, ROUND_DOWN
 from dotenv import load_dotenv
-from config_manager import ConfigManager
+from .config import ConfigManager
 
 # Initialize config manager
 config_manager = ConfigManager()

@@ -4,8 +4,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler
 from dotenv import load_dotenv
-from bybit_trading_bot import process_instruction, BybitTradingBot
-from config_manager import ConfigManager
+from .trading import process_instruction, BybitTradingBot
+from .config import ConfigManager
 from typing import Tuple, List
 
 # Load environment variables
