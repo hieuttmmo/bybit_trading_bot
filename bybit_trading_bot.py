@@ -153,7 +153,7 @@ class BybitTradingBot:
     def place_order(self, action: str, symbol: str, entry: float, stl: float, tp_prices: List[float]):
         """Place the main order and corresponding take profit orders."""
         # Convert action to side
-        side = "Buy" if action == "LONG" else "Sell"
+        side = "Buy" if action.upper() == "LONG" else "Sell"
         
         try:
             # Get instrument info for lot size
