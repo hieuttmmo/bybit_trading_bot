@@ -7,22 +7,43 @@ from dotenv import load_dotenv
 from .trading import process_instruction, BybitTradingBot
 from .config import ConfigManager
 from typing import Tuple, List
+import pathlib
 
-# Load environment variables
-load_dotenv()
+# Get the absolute path to the config directory
+CONFIG_DIR = pathlib.Path(__file__).parent.parent.parent / 'config'
+ENV_FILE = CONFIG_DIR / '.env'
+CONFIG_FILE = CONFIG_DIR / 'bot_config.json'
+
+print(f"Loading config from: {CONFIG_DIR}")
+print(f"ENV file path: {ENV_FILE}")
+print(f"Config file path: {CONFIG_FILE}")
+
+# Create config directory if it doesn't exist
+os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# Load environment variables from specific .env file
+if not ENV_FILE.exists():
+    # If .env doesn't exist in config dir, try to copy from root
+    root_env = pathlib.Path(__file__).parent.parent.parent / '.env'
+    if root_env.exists():
+        import shutil
+        shutil.copy(root_env, ENV_FILE)
+        print(f"Copied .env from {root_env} to {ENV_FILE}")
+
+load_dotenv(dotenv_path=ENV_FILE)
 
 # Get Telegram token from environment variable
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 ALLOWED_USER_IDS = [int(id.strip()) for id in os.getenv('ALLOWED_TELEGRAM_USERS', '').split(',') if id.strip()]
 
 if not TELEGRAM_TOKEN:
-    raise ValueError("Please set TELEGRAM_TOKEN in your .env file")
+    raise ValueError(f"Please set TELEGRAM_TOKEN in your .env file at {ENV_FILE}")
 
 if not ALLOWED_USER_IDS:
-    raise ValueError("Please set ALLOWED_TELEGRAM_USERS in your .env file")
+    raise ValueError(f"Please set ALLOWED_TELEGRAM_USERS in your .env file at {ENV_FILE}")
 
-# Initialize config manager
-config_manager = ConfigManager()
+# Initialize config manager with specific config file
+config_manager = ConfigManager(config_file=CONFIG_FILE)
 
 # States for conversation handler
 AWAITING_API_KEY, AWAITING_API_SECRET, AWAITING_LEVERAGE, AWAITING_BALANCE_PERCENTAGE, AWAITING_CLOSE_PERCENTAGE = range(5)
@@ -32,14 +53,29 @@ def is_authorized(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 def get_main_menu_keyboard():
-    """Get the main menu keyboard."""
+    """Get the enhanced main menu keyboard with status."""
+    try:
+        bot = BybitTradingBot()
+        balance = bot.get_wallet_balance()
+        env = config_manager.get_environment().upper()
+        balance_text = f"💰 Balance: ${format_number(balance)} USDT"
+    except:
+        balance_text = "💰 Balance: Loading..."
+        env = "UNKNOWN"
+
     keyboard = [
+        [InlineKeyboardButton(f"🌍 {env} Mode", callback_data='switch_env')],
+        [InlineKeyboardButton(balance_text, callback_data='balance_info')],
         [
             InlineKeyboardButton("📊 Trading", callback_data='menu_trading'),
+            InlineKeyboardButton("⚙️ Quick Trade", callback_data='quick_trade')
+        ],
+        [
+            InlineKeyboardButton("📈 Positions", callback_data='view_positions'),
             InlineKeyboardButton("⚙️ Settings", callback_data='menu_settings')
         ],
         [
-            InlineKeyboardButton("📈 Status", callback_data='menu_status'),
+            InlineKeyboardButton("📊 Statistics", callback_data='menu_stats'),
             InlineKeyboardButton("❓ Help", callback_data='menu_help')
         ]
     ]
@@ -80,9 +116,13 @@ def get_environment_keyboard():
 def get_trading_params_keyboard():
     """Get trading parameters configuration keyboard."""
     params = config_manager.get_trading_params()
+    # Get values with defaults if not set
+    leverage = params.get('leverage', 5)
+    balance_pct = params.get('balance_percentage', 0.1)
+    
     keyboard = [
-        [InlineKeyboardButton(f"🔢 Leverage: {params['leverage']}x", callback_data='set_leverage')],
-        [InlineKeyboardButton(f"💰 Balance %: {params['balance_percentage'] * 100}%", callback_data='set_balance')],
+        [InlineKeyboardButton(f"🔧 Leverage: {leverage}x", callback_data='set_leverage')],
+        [InlineKeyboardButton(f"💰 Balance %: {balance_pct * 100:.1f}%", callback_data='set_balance')],
         [InlineKeyboardButton("« Back to Settings", callback_data='menu_settings')]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -128,23 +168,21 @@ def get_position_keyboard(symbol: str):
 
 def get_close_position_keyboard(symbol: str):
     """Get keyboard for position closing options."""
-    keyboard = []
-    # Common percentages in rows of 3
-    percentages = [25, 50, 75, 100]
-    row = []
-    for pct in percentages:
-        row.append(InlineKeyboardButton(f"{pct}%", callback_data=f'close_pct_{symbol}_{pct}'))
-        if len(row) == 3:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    
-    # Add custom percentage option and cancel
-    keyboard.append([
-        InlineKeyboardButton("Custom %", callback_data=f'close_custom_{symbol}'),
-        InlineKeyboardButton("Cancel", callback_data='view_positions')
-    ])
+    keyboard = [
+        [
+            InlineKeyboardButton("25%", callback_data=f'close_pct_{symbol}_25'),
+            InlineKeyboardButton("50%", callback_data=f'close_pct_{symbol}_50'),
+            InlineKeyboardButton("75%", callback_data=f'close_pct_{symbol}_75')
+        ],
+        [
+            InlineKeyboardButton("100%", callback_data=f'close_pct_{symbol}_100'),
+            InlineKeyboardButton("Custom %", callback_data=f'close_custom_{symbol}')
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data='view_positions'),
+            InlineKeyboardButton("« Cancel", callback_data='view_positions')
+        ]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,8 +206,107 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == 'menu_main':
         await query.edit_message_text(
-            "Main Menu - Please select an option:",
+            "🏠 Main Menu - Please select an option:",
             reply_markup=get_main_menu_keyboard()
+        )
+    
+    elif data == 'quick_trade':
+        await query.edit_message_text(
+            "⚡️ Quick Trade Menu\nSelect a quick trade option:",
+            reply_markup=get_quick_trade_keyboard()
+        )
+    
+    elif data.startswith('quick_'):
+        # Handle quick trade actions
+        action, direction, symbol = data.split('_')  # quick_buy_btc or quick_sell_btc
+        symbol = symbol.upper() + "USDT"
+        
+        try:
+            # Get current market price
+            bot = BybitTradingBot()
+            params = config_manager.get_trading_params()
+            
+            # Format the instruction
+            side = "LONG" if direction == "buy" else "SHORT"
+            instruction = f"{side} ${symbol}\nEntry 0\n"  # 0 means market price
+            
+            # Calculate stop loss (2% for now)
+            current_price = bot.get_market_price(symbol)
+            sl_price = current_price * 0.98 if direction == "buy" else current_price * 1.02
+            instruction += f"Stl {sl_price:.1f}\n"
+            
+            # Calculate take profits (2% and 4%)
+            if direction == "buy":
+                tp1 = current_price * 1.02
+                tp2 = current_price * 1.04
+            else:
+                tp1 = current_price * 0.98
+                tp2 = current_price * 0.96
+            instruction += f"Tp {tp1:.1f} - {tp2:.1f}"
+            
+            # Process the quick trade
+            result = process_instruction(instruction)
+            
+            # Show result and positions
+            positions_message, keyboard = get_active_positions()
+            await query.edit_message_text(
+                f"⚡️ Quick Trade Executed!\n\n{result}\n\n{positions_message}",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Error executing quick trade: {str(e)}",
+                reply_markup=get_quick_trade_keyboard()
+            )
+    
+    elif data == 'balance_info':
+        try:
+            bot = BybitTradingBot()
+            balance = bot.get_wallet_balance()
+            positions = bot.get_active_positions()
+            
+            total_pnl = sum(pos['unrealized_pnl'] for pos in positions)
+            total_position_value = sum(pos['position_value'] for pos in positions)
+            
+            message = f"""💰 Balance Information:
+
+Available Balance: ${format_number(balance)} USDT
+Positions Value: ${format_number(total_position_value)} USDT
+Unrealized PNL: ${format_number(total_pnl)} USDT
+Active Positions: {len(positions)}
+
+Risk Level: {"🟢 Low" if total_position_value < balance * 0.5 else "🟡 Medium" if total_position_value < balance * 0.8 else "🔴 High"}"""
+            
+            await query.edit_message_text(
+                message,
+                reply_markup=get_main_menu_keyboard()
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Error fetching balance: {str(e)}",
+                reply_markup=get_main_menu_keyboard()
+            )
+    
+    elif data.startswith('update_sltp_'):
+        symbol = data.split('_')[2]
+        # Show SL/TP update options
+        keyboard = [
+            [
+                InlineKeyboardButton("-1%", callback_data=f'sl_minus_{symbol}'),
+                InlineKeyboardButton("SL", callback_data=f'sl_current_{symbol}'),
+                InlineKeyboardButton("+1%", callback_data=f'sl_plus_{symbol}')
+            ],
+            [
+                InlineKeyboardButton("-1%", callback_data=f'tp_minus_{symbol}'),
+                InlineKeyboardButton("TP", callback_data=f'tp_current_{symbol}'),
+                InlineKeyboardButton("+1%", callback_data=f'tp_plus_{symbol}')
+            ],
+            [InlineKeyboardButton("« Back", callback_data='view_positions')]
+        ]
+        await query.edit_message_text(
+            f"🎯 Adjust Stop Loss/Take Profit for {symbol}:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     elif data == 'menu_settings':
@@ -377,9 +514,15 @@ async def receive_api_secret(update: Update, context: ContextTypes.DEFAULT_TYPE)
     is_testnet = config_manager.get_environment() == 'testnet'
     
     if config_manager.set_api_keys(api_key, api_secret, is_testnet):
-        await update.message.reply_text("API keys configured successfully!")
+        await update.message.reply_text(
+            "API keys configured successfully!",
+            reply_markup=get_settings_keyboard()
+        )
     else:
-        await update.message.reply_text("Failed to configure API keys. Please try again.")
+        await update.message.reply_text(
+            "Failed to configure API keys. Please try again.",
+            reply_markup=get_settings_keyboard()
+        )
     
     return ConversationHandler.END
 
@@ -398,13 +541,22 @@ async def receive_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         leverage = int(update.message.text)
         if 1 <= leverage <= 20:
             context.user_data['leverage'] = leverage
-            await update.message.reply_text("Now, enter the balance percentage (1-100):")
+            await update.message.reply_text(
+                "Please enter the balance percentage to use (1-100):",
+                reply_markup=get_trading_params_keyboard()
+            )
             return AWAITING_BALANCE_PERCENTAGE
         else:
-            await update.message.reply_text("Leverage must be between 1 and 20. Try again:")
+            await update.message.reply_text(
+                "Please enter a valid leverage between 1 and 20:",
+                reply_markup=get_trading_params_keyboard()
+            )
             return AWAITING_LEVERAGE
     except ValueError:
-        await update.message.reply_text("Please enter a valid number. Try again:")
+        await update.message.reply_text(
+            "Please enter a valid number between 1 and 20:",
+            reply_markup=get_trading_params_keyboard()
+        )
         return AWAITING_LEVERAGE
 
 async def receive_balance_percentage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -427,36 +579,41 @@ async def receive_balance_percentage(update: Update, context: ContextTypes.DEFAU
         return AWAITING_BALANCE_PERCENTAGE
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel the current conversation."""
-    await update.message.reply_text("Operation cancelled.")
+    """Cancel the current conversation and show main menu."""
+    if update.message:
+        await update.message.reply_text(
+            "Operation cancelled.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(
+            "Operation cancelled.",
+            reply_markup=get_main_menu_keyboard()
+        )
     return ConversationHandler.END
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming trading instructions."""
+    """Handle incoming messages."""
     if not is_authorized(update.effective_user.id):
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
 
-    message_text = update.message.text
-
-    # Check if the message looks like a trading instruction
-    if any(action in message_text.upper().split('\n')[0] for action in ['LONG', 'SHORT']):
-        try:
-            # Send acknowledgment
-            await update.message.reply_text("Processing your trading instruction...")
-            
-            # Process the instruction
-            success, message = process_instruction(message_text)
-            
-            if success:
-                await update.message.reply_text(f"✅ Trade executed successfully!\n{message}")
-            else:
-                await update.message.reply_text(f"❌ Error executing trade:\n{message}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-    else:
-        # Message doesn't look like a trading instruction
-        await update.message.reply_text("Invalid instruction format. Please use the format shown in /help")
+    message = update.message.text
+    
+    # Process the trading instruction
+    try:
+        success, result = process_instruction(message)
+        await update.message.reply_text(
+            result,
+            parse_mode=ParseMode.MARKDOWN,  # Enable markdown formatting
+            reply_markup=get_trading_keyboard()  # Show trading menu after processing
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ *Error processing instruction:*\n{str(e)}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_trading_keyboard()  # Show trading menu even on error
+        )
 
 async def start_position_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the position closing process."""
@@ -474,7 +631,7 @@ async def start_position_close(update: Update, context: ContextTypes.DEFAULT_TYP
     return AWAITING_CLOSE_PERCENTAGE
 
 async def handle_close_percentage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle the closing percentage input."""
+    """Handle the close percentage input."""
     try:
         symbol = context.user_data.get('closing_symbol')
         if not symbol:
@@ -526,19 +683,34 @@ async def handle_close_percentage(update: Update, context: ContextTypes.DEFAULT_
             
         # Update positions view
         positions_message, keyboard = get_active_positions()
-        await update.effective_message.reply_text(
-            result_message + "\n\n" + positions_message,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        return ConversationHandler.END
-        
+        if isinstance(update, Update) and update.message:
+            await update.message.reply_text(
+                positions_message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(
+                positions_message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
     except ValueError:
         await update.effective_message.reply_text("Please enter a valid number between 1 and 100:")
         return AWAITING_CLOSE_PERCENTAGE
     except Exception as e:
-        await update.effective_message.reply_text(f"Error: {str(e)}")
-        return ConversationHandler.END
+        error_message = f"Error: {str(e)}"
+        if isinstance(update, Update) and update.message:
+            await update.message.reply_text(
+                error_message,
+                reply_markup=get_trading_keyboard()
+            )
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(
+                error_message,
+                reply_markup=get_trading_keyboard()
+            )
+    
+    return ConversationHandler.END
 
 def get_trading_history() -> str:
     """Get trading history from Bybit."""
@@ -564,64 +736,290 @@ def get_trading_history() -> str:
 
 def format_number(num: float, decimals: int = 2) -> str:
     """Format number with appropriate decimals and commas."""
-    return f"{num:,.{decimals}f}"
+    try:
+        # Handle None or invalid values
+        if num is None:
+            return "0.00"
+            
+        # Convert to float if string
+        if isinstance(num, str):
+            num = float(num)
+            
+        # Store sign
+        is_negative = num < 0
+        abs_num = abs(num)
+        
+        # Format the absolute number with commas and decimals
+        formatted = f"{abs_num:,.{decimals}f}"
+        
+        # Add negative sign if needed
+        return f"-{formatted}" if is_negative else formatted
+        
+    except (ValueError, TypeError):
+        return "0.00"
+
+def get_quick_trade_keyboard():
+    """Get quick trade options keyboard."""
+    keyboard = [
+        [
+            InlineKeyboardButton("⚡️ Market Buy BTC", callback_data='quick_buy_btc'),
+            InlineKeyboardButton("⚡️ Market Sell BTC", callback_data='quick_sell_btc')
+        ],
+        [
+            InlineKeyboardButton("⚡️ Market Buy ETH", callback_data='quick_buy_eth'),
+            InlineKeyboardButton("⚡️ Market Sell ETH", callback_data='quick_sell_eth')
+        ],
+        [InlineKeyboardButton("« Back to Main Menu", callback_data='menu_main')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def format_position_message(pos) -> str:
+    """Enhanced position message formatting."""
+    # Calculate duration
+    try:
+        from datetime import datetime
+        created_time = datetime.fromtimestamp(pos.get('created_time', 0) / 1000)
+        duration = datetime.now() - created_time
+        duration_str = f"{duration.days}d {duration.seconds//3600}h {(duration.seconds//60)%60}m"
+    except:
+        duration_str = "N/A"
+
+    # Calculate risk level
+    try:
+        distance_to_liq = abs(pos['current_price'] - pos['liq_price']) / pos['current_price'] * 100
+        if distance_to_liq < 5:
+            risk_level = "🔴 HIGH RISK"
+        elif distance_to_liq < 15:
+            risk_level = "🟡 MEDIUM RISK"
+        else:
+            risk_level = "🟢 LOW RISK"
+    except:
+        risk_level = "⚪️ UNKNOWN"
+
+    # Format the message
+    side_emoji = "🟢" if pos['side'] == "Buy" else "🔴"
+    pnl_emoji = "📈" if pos['unrealized_pnl'] > 0 else "📉"
+    
+    message = f"""{'='*40}
+{side_emoji} {pos['side'].upper()} {pos['symbol']}
+
+💰 PNL: {pnl_emoji} {format_number(pos['unrealized_pnl'])} USDT ({format_number(pos['pnl_percentage'])}%)
+📊 Position Value: {format_number(pos['position_value'])} USDT
+📐 Size: {format_number(pos['size'])} {pos['symbol'].replace('USDT', '')}
+
+📍 Entry: {format_number(pos['entry_price'])} USDT
+💹 Current: {format_number(pos['current_price'])} USDT
+⚠️ Liq. Price: {format_number(pos['liq_price'])} USDT
+
+⏱️ Duration: {duration_str}
+🔧 Leverage: {pos['leverage']}x
+⚠️ Risk Level: {risk_level}
+{'='*40}"""
+    
+    return message
+
+def format_positions_message(positions: list) -> str:
+    """Format positions list into a readable message."""
+    if not positions:
+        return "No active positions found"
+        
+    # Calculate total PnL and position value
+    total_unrealised_pnl = sum(float(pos.get('unrealisedPnl', '0')) for pos in positions)
+    total_position_value = sum(float(pos.get('positionValue', '0')) for pos in positions)
+    total_realised_pnl = sum(float(pos.get('cumRealisedPnl', '0')) for pos in positions)
+    
+    # Format header with totals
+    message = "📊 Active Positions Summary:\n\n"
+    message += f"💰 Total Unrealized PNL: {format_number(total_unrealised_pnl)} USDT\n"
+    message += f"💵 Total Realized PNL: {format_number(total_realised_pnl)} USDT\n"
+    message += f"📊 Total Position Value: {format_number(total_position_value)} USDT\n"
+    message += f"📈 Active Positions: {len(positions)}\n\n"
+    message += "=" * 40 + "\n"
+    
+    # Format each position
+    for pos in positions:
+        try:
+           
+            # Basic position information
+            side_emoji = "🟢" if pos.get('side') == "Buy" else "🔴"
+            symbol = pos.get('symbol', 'Unknown')
+            size = float(pos.get('size', '0'))
+            avg_price = float(pos.get('avgPrice', '0'))
+            mark_price = float(pos.get('markPrice', '0'))
+            
+            # PNL information
+            unrealised_pnl = float(pos.get('unrealisedPnl', '0'))
+            position_value = float(pos.get('positionValue', '0'))
+            cur_realised_pnl = float(pos.get('curRealisedPnl', '0'))
+            cum_realised_pnl = float(pos.get('cumRealisedPnl', '0'))
+            
+            # Calculate PnL percentage
+            pnl_percentage = (unrealised_pnl / position_value * 100) if position_value > 0 else 0
+            
+            # Position details
+            leverage = pos.get('leverage', '1')
+            liq_price = pos.get('liqPrice', '')
+            bust_price = pos.get('bustPrice', '')
+            
+            # # Margin information
+            # position_mm = float(pos.get('positionMM', '0'))  # Maintenance margin
+            # position_im = float(pos.get('positionIM', '0'))  # Initial margin
+            # position_balance = float(pos.get('positionBalance', '0'))  # Position margin
+            
+            # # Risk information
+            # position_status = pos.get('positionStatus', 'Normal')
+            # adl_rank = int(pos.get('adlRankIndicator', '0'))
+            # auto_margin = int(pos.get('autoAddMargin', '0')) == 1
+            # risk_id = int(pos.get('riskId', '1'))
+            # risk_limit = float(pos.get('riskLimitValue', '0'))
+            # is_reduce_only = bool(pos.get('isReduceOnly', False))
+            # trade_mode = "Cross" if int(pos.get('tradeMode', '0')) == 0 else "Isolated"
+            
+            # Format position details
+            message += f"{side_emoji} {pos.get('side', 'Unknown')} {symbol}\n\n"
+            
+            # PNL Information with proper negative number formatting
+            message += f"💰 Unrealized PNL: {format_number(unrealised_pnl)} USDT ({format_number(pnl_percentage, 2)}%)\n"
+            message += f"💵 Current Realized PNL: {format_number(cur_realised_pnl)} USDT\n"
+            message += f"💵 Cumulative Realized PNL: {format_number(cum_realised_pnl)} USDT\n"
+            message += f"📊 Position Value: {format_number(position_value)} USDT\n"
+            message += f"📐 Size: {format_number(size, 3)} {symbol.replace('USDT', '')}\n\n"
+            
+            # Price Information
+            message += f"📍 Entry: {format_number(avg_price)} USDT\n"
+            message += f"💹 Mark: {format_number(mark_price)} USDT\n"
+            
+            # # Position Status and Risk
+            # message += f"\n📊 Status: {position_status}"
+            # if is_reduce_only:
+            #     message += " (Reduce Only)"
+            # message += f"\n💫 Mode: {trade_mode}"
+            # if adl_rank > 0:
+            #     message += f"\n⚠️ ADL Rank: {adl_rank}"
+            # if auto_margin:
+            #     message += f"\n🔄 Auto-Add Margin: Enabled"
+            
+            # # Margin Information
+            # message += f"\n💫 Initial Margin: {format_number(position_im)} USDT"
+            # message += f"\n💫 Maintenance Margin: {format_number(position_mm)} USDT"
+            # if position_balance > 0:
+            #     message += f"\n💫 Position Margin: {format_number(position_balance)} USDT"
+            # message += f"\n🛡️ Risk Limit: {format_number(risk_limit, 0)} USDT (Level {risk_id})"
+            
+            # # TP/SL Information
+            # tpsl_mode = pos.get('tpslMode', 'Full')
+            # take_profit = pos.get('takeProfit', '')
+            # stop_loss = pos.get('stopLoss', '')
+            # trailing_stop = pos.get('trailingStop', '')
+            
+            # Get TP/SL arrays
+            take_profits = pos.get('takeProfit', [])
+            stop_losses = pos.get('stopLoss', [])
+            
+            # message += f"\n\n🎯 TP/SL Mode: {tpsl_mode}"
+            
+            # Display Take Profits
+            if take_profits:
+                message += "\n🎯 Take Profit Orders:"
+                for i, tp in enumerate(take_profits, 1):
+                    tp_pct = ((float(tp) - avg_price) / avg_price * 100)
+                    tp_direction = "+" if pos.get('side') == "Buy" else "-"
+                    message += f"\n   {i}. {format_number(float(tp))} USDT ({tp_direction}{format_number(abs(tp_pct))}%)"
+            elif take_profits and take_profits != '':
+                tp_pct = ((float(take_profits) - avg_price) / avg_price * 100)
+                tp_direction = "+" if pos.get('side') == "Buy" else "-"
+                message += f"\n🎯 Take Profit: {format_number(float(take_profits))} USDT ({tp_direction}{format_number(abs(tp_pct))}%)"
+            
+            # Display Stop Losses
+            if stop_losses:
+                message += "\n🛑 Stop Loss Orders:"
+                for i, sl in enumerate(stop_losses, 1):
+                    sl_pct = ((float(sl) - avg_price) / avg_price * 100)
+                    sl_direction = "-" if pos.get('side') == "Buy" else "+"
+                    message += f"\n   {i}. {format_number(float(sl))} USDT ({sl_direction}{format_number(abs(sl_pct))}%)"
+            elif stop_loss and stop_loss != '':
+                sl_pct = ((float(stop_loss) - avg_price) / avg_price * 100)
+                sl_direction = "-" if pos.get('side') == "Buy" else "+"
+                message += f"\n🛑 Stop Loss: {format_number(float(stop_loss))} USDT ({sl_direction}{format_number(abs(sl_pct))}%)"
+            
+            if trailing_stop and trailing_stop != '0':
+                message += f"\n📍 Trailing Stop: {format_number(float(trailing_stop))} USDT"
+            
+            # Liquidation Information
+            if liq_price and liq_price != '':
+                liq_pct = abs((float(liq_price) - avg_price) / avg_price * 100)
+                message += f"\n⚠️ Liq. Price: {format_number(float(liq_price))} USDT ({format_number(liq_pct)}% away)"
+            if bust_price and bust_price != '':
+                bust_pct = abs((float(bust_price) - avg_price) / avg_price * 100)
+                message += f"\n💀 Bankruptcy Price: {format_number(float(bust_price))} USDT ({format_number(bust_pct)}% away)"
+            
+            message += f"\n\n🔧 Leverage: {leverage}x"
+            
+            # Add risk level indicator
+            if float(leverage) <= 5:
+                message += "\n⚠️ Risk Level: 🟢 LOW RISK"
+            elif float(leverage) <= 10:
+                message += "\n⚠️ Risk Level: 🟡 MEDIUM RISK"
+            else:
+                message += "\n⚠️ Risk Level: 🔴 HIGH RISK"
+            
+            # Add position duration
+            try:
+                created_time = int(pos.get('createdTime', '0')) / 1000  # Convert to seconds
+                if created_time > 0:
+                    from datetime import datetime
+                    duration = datetime.now() - datetime.fromtimestamp(created_time)
+                    days = duration.days
+                    hours = duration.seconds // 3600
+                    minutes = (duration.seconds % 3600) // 60
+                    duration_str = f"{days}d {hours}h {minutes}m"
+                    message += f"\n⏱️ Duration: {duration_str}"
+            except Exception as e:
+                print(f"Error calculating duration: {str(e)}")
+            
+            message += "\n" + "=" * 40 + "\n"
+            
+        except Exception as e:
+            print(f"Error formatting position {pos.get('symbol', 'Unknown')}: {str(e)}")
+            continue
+    
+    return message
 
 def get_active_positions() -> Tuple[str, List[List[InlineKeyboardButton]]]:
-    """Get and format active positions. Returns tuple of (message, keyboard)."""
+    """Enhanced get and format active positions."""
     try:
         bot = BybitTradingBot()
         positions = bot.get_active_positions()
         
-        if not positions:
-            return "No active positions found.", [[InlineKeyboardButton("« Back to Trading", callback_data='menu_trading')]]
-            
-        message = "📊 Active Positions:\n\n"
-        keyboard = []
+        # Format the positions message
+        message = format_positions_message(positions)
         
-        for pos in positions:
-            # Format PNL with color emoji
-            pnl_emoji = "🟢" if pos['unrealized_pnl'] > 0 else "🔴"
-            pnl_text = f"{pnl_emoji} {format_number(pos['unrealized_pnl'])} USDT ({format_number(pos['pnl_percentage'])}%)"
-            
-            # Format side with color
-            side_emoji = "🟢" if pos['side'] == "Buy" else "🔴"
-            side_text = f"{side_emoji} {'LONG' if pos['side'] == 'Buy' else 'SHORT'}"
-            
-            # Calculate price movement
-            price_change = ((pos['current_price'] - pos['entry_price']) / pos['entry_price']) * 100
-            price_emoji = "📈" if price_change > 0 else "📉"
-            
-            message += f"{'='*40}\n"
-            message += f"{side_text} {pos['symbol']}\n\n"
-            
-            message += f"💰 PNL: {pnl_text}\n"
-            message += f"📊 Position Value: {format_number(pos['position_value'])} USDT\n"
-            message += f"📐 Size: {format_number(pos['size'])} {pos['symbol'].replace('USDT', '')}\n\n"
-            
-            message += f"📍 Entry: {format_number(pos['entry_price'])} USDT\n"
-            message += f"{price_emoji} Current: {format_number(pos['current_price'])} USDT ({format_number(price_change)}%)\n"
-            if pos['liq_price']:
-                message += f"⚠️ Liq. Price: {format_number(pos['liq_price'])} USDT\n"
-            
-            message += f"🔧 Leverage: {pos['leverage']}x\n\n"
-            
-            # Add close button for this position
-            keyboard.append([InlineKeyboardButton(f"🔴 Close {pos['symbol']}", callback_data=f"close_{pos['symbol']}")])
-        
-        # Add close all button if there are multiple positions
-        if len(positions) > 1:
-            keyboard.append([InlineKeyboardButton("🔴 Close All Positions", callback_data='close_all_positions')])
+        # Create buttons for each position
+        buttons = []
+        if positions:
+            for pos in positions:
+                symbol = pos.get('symbol', '')
+                if symbol:
+                    buttons.append([
+                        InlineKeyboardButton(f"Close {symbol}", callback_data=f"close_{symbol}")
+                    ])
         
         # Add refresh and back buttons
-        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data='view_positions')])
-        keyboard.append([InlineKeyboardButton("« Back to Trading", callback_data='menu_trading')])
+        nav_buttons = [
+            InlineKeyboardButton("🔄 Refresh", callback_data="view_positions"),
+            InlineKeyboardButton("« Back to Trading", callback_data="menu_trading")
+        ]
+        buttons.append(nav_buttons)
         
-        return message, keyboard
+        return message, buttons
         
     except Exception as e:
-        error_msg = f"Error fetching positions: {str(e)}"
-        error_keyboard = [[InlineKeyboardButton("« Back to Trading", callback_data='menu_trading')]]
-        return error_msg, error_keyboard
+        error_msg = f"❌ Error fetching positions: {str(e)}"
+        error_buttons = [[
+            InlineKeyboardButton("🔄 Retry", callback_data="view_positions"),
+            InlineKeyboardButton("« Back to Main", callback_data="menu_main")
+        ]]
+        return error_msg, error_buttons
 
 async def handle_close_all_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle closing all positions."""
@@ -658,7 +1056,7 @@ async def execute_close_all_positions(update: Update, context: ContextTypes.DEFA
         # Get updated positions
         positions_message, keyboard = get_active_positions()
         
-        # Show result
+        # Show result and keep the menu
         if success:
             await query.edit_message_text(
                 f"✅ {message}\n\n{positions_message}",
@@ -672,9 +1070,7 @@ async def execute_close_all_positions(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         await query.edit_message_text(
             f"❌ Error: {str(e)}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("« Back to Trading", callback_data='menu_trading')
-            ]])
+            reply_markup=get_trading_keyboard()  # Show trading menu on error
         )
 
 def main() -> None:

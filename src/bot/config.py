@@ -1,101 +1,143 @@
-import os
 import json
-from typing import Dict, Any
-from dotenv import load_dotenv, set_key
+import os
+import shutil
+from pathlib import Path
 
 class ConfigManager:
-    def __init__(self, config_file: str = "bot_config.json"):
-        self.config_file = config_file
-        self.env_file = ".env"
+    """Manage bot configuration."""
+    
+    def __init__(self, config_file=None):
+        """Initialize with optional specific config file path."""
+        self.config_file = Path(config_file) if config_file else Path(__file__).parent.parent.parent / 'config' / 'bot_config.json'
+        
+        # Create config directory if it doesn't exist
+        os.makedirs(self.config_file.parent, exist_ok=True)
+        
+        # If config file doesn't exist in config dir, try to copy from root
+        if not self.config_file.exists():
+            root_config = Path(__file__).parent.parent.parent / 'bot_config.json'
+            if root_config.exists():
+                shutil.copy(root_config, self.config_file)
+                print(f"Copied bot_config.json from {root_config} to {self.config_file}")
+        
         self._load_config()
-
+    
     def _load_config(self):
-        """Load configuration from JSON file."""
-        if os.path.exists(self.config_file):
+        """Load configuration from file."""
+        try:
             with open(self.config_file, 'r') as f:
                 self.config = json.load(f)
-        else:
+                
+            # Ensure trading params exist with defaults
+            if 'trading_params' not in self.config:
+                self.config['trading_params'] = {}
+            
+            # Set defaults if not present
+            trading_params = self.config['trading_params']
+            if 'leverage' not in trading_params:
+                trading_params['leverage'] = 5
+            if 'balance_percentage' not in trading_params:
+                trading_params['balance_percentage'] = 0.1
+                
+            # Save if we added any defaults
+            self._save_config()
+                
+        except FileNotFoundError:
             self.config = {
-                "use_testnet": True,
-                "leverage": 20,
-                "balance_percentage": 0.05,
-                "active_api": "testnet"  # or "mainnet"
+                'environment': 'testnet',
+                'trading_params': {
+                    'leverage': 5,
+                    'balance_percentage': 0.1
+                }
             }
             self._save_config()
-
+    
     def _save_config(self):
-        """Save configuration to JSON file."""
+        """Save configuration to file."""
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
         with open(self.config_file, 'w') as f:
             json.dump(self.config, f, indent=4)
-
-    def get_config(self) -> Dict[str, Any]:
-        """Get current configuration."""
-        return self.config
-
-    def update_config(self, key: str, value: Any) -> bool:
-        """Update a configuration value."""
-        if key in self.config:
-            self.config[key] = value
-            self._save_config()
-            return True
-        return False
-
-    def set_api_keys(self, api_key: str, api_secret: str, is_testnet: bool = True) -> bool:
-        """Set API keys in .env file."""
+    
+    def get_environment(self) -> str:
+        """Get current environment (testnet/mainnet)."""
+        return self.config.get('environment', 'testnet')
+    
+    def switch_environment(self, use_testnet: bool):
+        """Switch between testnet and mainnet."""
+        self.config['environment'] = 'testnet' if use_testnet else 'mainnet'
+        self._save_config()
+    
+    def get_trading_params(self) -> dict:
+        """Get trading parameters with defaults."""
+        params = self.config.get('trading_params', {})
+        return {
+            'leverage': params.get('leverage', 5),
+            'balance_percentage': params.get('balance_percentage', 0.1)
+        }
+    
+    def set_trading_params(self, leverage=None, balance_percentage=None):
+        """Set trading parameters."""
+        if 'trading_params' not in self.config:
+            self.config['trading_params'] = {}
+        
+        if leverage is not None:
+            self.config['trading_params']['leverage'] = leverage
+        
+        if balance_percentage is not None:
+            self.config['trading_params']['balance_percentage'] = balance_percentage
+        
+        self._save_config()
+        return True
+    
+    def get_active_api_keys(self) -> tuple:
+        """Get active API keys based on environment."""
+        env = self.get_environment()
+        if env == 'testnet':
+            api_key = os.getenv('TESTNET_API_KEY')
+            api_secret = os.getenv('TESTNET_API_SECRET')
+        else:
+            api_key = os.getenv('MAINNET_API_KEY')
+            api_secret = os.getenv('MAINNET_API_SECRET')
+        return api_key, api_secret
+    
+    def set_api_keys(self, api_key: str, api_secret: str, is_testnet: bool) -> bool:
+        """Set API keys in environment file."""
+        env_file = Path(self.config_file).parent / '.env'
+        
         try:
-            prefix = "TESTNET_" if is_testnet else "MAINNET_"
-            set_key(self.env_file, f"{prefix}BYBIT_API_KEY", api_key)
-            set_key(self.env_file, f"{prefix}BYBIT_API_SECRET", api_secret)
+            # Read current env file
+            if env_file.exists():
+                with open(env_file, 'r') as f:
+                    lines = f.readlines()
+            else:
+                lines = []
             
-            # Update active API setting
-            self.config["active_api"] = "testnet" if is_testnet else "mainnet"
-            self.config["use_testnet"] = is_testnet
-            self._save_config()
+            # Update or add API keys
+            prefix = 'TESTNET_' if is_testnet else 'MAINNET_'
+            key_updated = False
+            secret_updated = False
+            
+            for i, line in enumerate(lines):
+                if line.startswith(f'{prefix}API_KEY='):
+                    lines[i] = f'{prefix}API_KEY={api_key}\n'
+                    key_updated = True
+                elif line.startswith(f'{prefix}API_SECRET='):
+                    lines[i] = f'{prefix}API_SECRET={api_secret}\n'
+                    secret_updated = True
+            
+            # Add new lines if not updated
+            if not key_updated:
+                lines.append(f'{prefix}API_KEY={api_key}\n')
+            if not secret_updated:
+                lines.append(f'{prefix}API_SECRET={api_secret}\n')
+            
+            # Write back to file
+            os.makedirs(os.path.dirname(env_file), exist_ok=True)
+            with open(env_file, 'w') as f:
+                f.writelines(lines)
             
             return True
         except Exception as e:
             print(f"Error setting API keys: {str(e)}")
-            return False
-
-    def get_active_api_keys(self) -> tuple:
-        """Get currently active API keys."""
-        load_dotenv()
-        prefix = "TESTNET_" if self.config["use_testnet"] else "MAINNET_"
-        api_key = os.getenv(f"{prefix}BYBIT_API_KEY")
-        api_secret = os.getenv(f"{prefix}BYBIT_API_SECRET")
-        return api_key, api_secret
-
-    def switch_environment(self, use_testnet: bool) -> bool:
-        """Switch between testnet and mainnet."""
-        try:
-            self.config["use_testnet"] = use_testnet
-            self.config["active_api"] = "testnet" if use_testnet else "mainnet"
-            self._save_config()
-            return True
-        except Exception as e:
-            print(f"Error switching environment: {str(e)}")
-            return False
-
-    def get_environment(self) -> str:
-        """Get current environment (testnet/mainnet)."""
-        return "testnet" if self.config["use_testnet"] else "mainnet"
-
-    def set_trading_params(self, leverage: int = None, balance_percentage: float = None) -> bool:
-        """Set trading parameters."""
-        try:
-            if leverage is not None:
-                self.config["leverage"] = leverage
-            if balance_percentage is not None:
-                self.config["balance_percentage"] = balance_percentage
-            self._save_config()
-            return True
-        except Exception as e:
-            print(f"Error setting trading parameters: {str(e)}")
-            return False
-
-    def get_trading_params(self) -> Dict[str, Any]:
-        """Get current trading parameters."""
-        return {
-            "leverage": self.config["leverage"],
-            "balance_percentage": self.config["balance_percentage"]
-        } 
+            return False 
