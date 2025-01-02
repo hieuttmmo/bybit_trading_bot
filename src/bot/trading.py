@@ -208,7 +208,7 @@ class BybitTradingBot:
             # Get leverage from trading params
             leverage = self.trading_params.get('leverage', 5)
             
-            # Place the main entry order with SL only first
+            # Place the main entry order with SL only
             is_market = entry == 0
             order_type = "Market" if is_market else "Limit"
             
@@ -223,8 +223,6 @@ class BybitTradingBot:
                 "timeInForce": "GTC",
                 "stopLoss": str(stl),
                 "slTriggerBy": "LastPrice",
-                "slOrderType": "Market",
-                "tpslMode": "Partial",  # Set to Partial initially
                 "leverage": str(leverage)
             }
             
@@ -243,62 +241,78 @@ class BybitTradingBot:
             
             order_id = main_order['result']['orderId']
             
-            # For market orders, wait for position to be opened
-            if is_market:
-                import time
-                max_attempts = 10
-                position_opened = False
-                
-                for attempt in range(max_attempts):
-                    try:
-                        position = self.session.get_positions(
-                            category="linear",
-                            symbol=f"{symbol}USDT"
-                        )
-                        
-                        if position['retCode'] == 0 and position['result']['list']:
-                            actual_position = position['result']['list'][0]
-                            size = float(actual_position['size']) if actual_position['size'] else 0
-                            
-                            if size > 0 and actual_position['side'] == side:
-                                print(f"Position verified after {attempt + 1} attempts")
-                                position_opened = True
-                                break
-                        
-                        print(f"Waiting for position to be opened (attempt {attempt + 1}/{max_attempts})")
-                        time.sleep(1)  # Wait 1 second between checks
-                        
-                    except Exception as e:
-                        print(f"Error checking position: {str(e)}")
-                        time.sleep(1)
-                
-                if not position_opened:
-                    raise Exception("Timeout waiting for position to be opened")
+            # Wait for position to be opened (for both market and limit orders)
+            import time
+            max_attempts = 10  # Increase max attempts for limit orders
+            position_opened = False
             
-            # Now amend the order to add take profits
-            tp_errors = []
-            for tp_price in tp_prices:
+            for attempt in range(max_attempts):
                 try:
-                    amend_params = {
-                        "category": "linear",
-                        "symbol": f"{symbol}USDT",
-                        "orderId": order_id,
-                        "takeProfit": str(tp_price),
-                        "tpTriggerBy": "LastPrice",
-                        "tpOrderType": "Limit",
-                        "tpLimitPrice": str(tp_price)
-                    }
+                    # Check position directly
+                    position = self.session.get_positions(
+                        category="linear",
+                        symbol=f"{symbol}USDT"
+                    )
                     
-                    amend_order = self.session.amend_order(**amend_params)
-                    print(f"TP amended: {amend_order}")  # Debug print
+                    if position['retCode'] == 0 and position['result']['list']:
+                        actual_position = position['result']['list'][0]
+                        position_size = float(actual_position.get('size', '0'))
+                        position_side = actual_position.get('side', '')
+                        
+                        # Check if we have a valid position
+                        if position_size > 0 and (
+                            (side == "Buy" and position_side == "Buy") or 
+                            (side == "Sell" and position_side == "Sell")
+                        ):
+                            print(f"Position opened after {attempt + 1} attempts. Size: {position_size}, Side: {position_side}")
+                            position_opened = True
+                            break
                     
-                    if amend_order['retCode'] != 0:
-                        tp_errors.append(f"TP at {tp_price}: {amend_order['retMsg']}")
+                    print(f"Waiting for position to be opened (attempt {attempt + 1}/{max_attempts})")
+                    time.sleep(2)  # Wait 2 seconds between checks
+                    
                 except Exception as e:
-                    if hasattr(self.session, 'last_request_data'):
-                        tp_errors.append(f"TP at {tp_price}: {str(e)}\nRequest → POST https://api-testnet.bybit.com/v5/order/amend: {json.dumps(self.session.last_request_data)}.")
-                    else:
-                        tp_errors.append(f"TP at {tp_price}: {str(e)}")
+                    print(f"Error checking position: {str(e)}")
+                    time.sleep(2)
+            
+            if not position_opened:
+                if is_market:
+                    raise Exception("Timeout waiting for position to be opened")
+                else:
+                    # For limit orders, just notify that TPs will be set after the order is filled
+                    success_msg = f"""✅ Limit Order Placed Successfully
+
+{side_emoji} Position: {action} {symbol.replace('USDT', '')}
+💰 Size: {total_quantity:.4f} {symbol.replace('USDT', '')}
+📊 Type: Limit Order
+🔧 Leverage: {leverage}x
+
+📍 Entry: {entry:,.2f} USDT
+🛑 Stop Loss: {stl:,.2f} USDT
+
+⏳ Take Profit orders will be set automatically once the position is opened.
+Please wait for the order to be filled at {entry:,.2f} USDT"""
+                    return True, success_msg
+            
+            # Set take profit orders using trading-stop endpoint
+            for tp_price, tp_size in zip(tp_prices, position_sizes):
+                tp_params = {
+                    "category": "linear",
+                    "symbol": f"{symbol}USDT",
+                    "takeProfit": str(tp_price),
+                    "tpTriggerBy": "LastPrice",
+                    "tpslMode": "Partial",
+                    "tpSize": str(tp_size),
+                    "tpOrderType": "Limit",
+                    "tpLimitPrice": str(tp_price),
+                    "positionIdx": 0
+                }
+                
+                tp_order = self.session.set_trading_stop(**tp_params)
+                print(f"TP order placed: {tp_order}")
+                
+                if tp_order['retCode'] != 0:
+                    print(f"Warning: Failed to set TP at {tp_price}: {tp_order['retMsg']}")
             
             entry_type = "market" if is_market else "limit"
             side_emoji = "🟢" if action.upper() == "LONG" else "🔴"
@@ -307,33 +321,30 @@ class BybitTradingBot:
             sl_pct = ((stl - entry) / entry * 100)
             sl_direction = "⬇️" if sl_pct < 0 else "⬆️"
             
-            success_msg = f"""✅ *Order Placed Successfully!*
+            success_msg = f"""✅ Order Placed Successfully
 
-{side_emoji} *Position:* {action} {symbol.replace('USDT', '')}
-💰 *Size:* {total_quantity:.4f} {symbol.replace('USDT', '')}
-📊 *Type:* {entry_type.title()} Order
-🔧 *Leverage:* {leverage}x
+{side_emoji} Position: {action} {symbol.replace('USDT', '')}
+💰 Size: {total_quantity:.4f} {symbol.replace('USDT', '')}
+📊 Type: {entry_type.title()} Order
+🔧 Leverage: {leverage}x
 
-📍 *Entry:* {entry:,.2f} USDT
-🛑 *Stop Loss:* {stl:,.2f} USDT ({sl_direction} {abs(sl_pct):.2f}%)
+📍 Entry: {entry:,.2f} USDT
+🛑 Stop Loss: {stl:,.2f} USDT ({sl_direction} {abs(sl_pct):.2f}%)
 
-🎯 *Take Profit Targets:*"""
+🎯 Take Profit Targets:"""
 
             # Calculate and add TP percentages
-            for i, tp in enumerate(tp_prices, 1):
+            for i, (tp, tp_size) in enumerate(zip(tp_prices, position_sizes), 1):
                 tp_pct = ((tp - entry) / entry * 100)
                 direction = "⬆️" if tp_pct > 0 else "⬇️"
-                success_msg += f"\n   {i}. {tp:,.2f} USDT ({direction} {abs(tp_pct):.2f}%)"
-            
-            if tp_errors:
-                success_msg += "\n\n⚠️ *Warning:* Some TP orders failed:\n" + "\n".join(tp_errors)
+                success_msg += f"\n   {i}. {tp:,.2f} USDT ({direction} {abs(tp_pct):.2f}%) - {tp_size} {symbol.replace('USDT', '')}"
             
             # Add risk warning if leverage is high
             if leverage > 10:
-                success_msg += "\n\n⚠️ *High Leverage Warning:*\nTrading with high leverage increases both potential profits and losses!"
+                success_msg += "\n\n⚠️ High Leverage Warning\nTrading with high leverage increases both potential profits and losses"
             
             # Add estimated PnL info
-            success_msg += f"\n\n💹 *Estimated PnL:*"
+            success_msg += f"\n\n💹 Estimated PnL:"
             success_msg += f"\n   • Stop Loss: {sl_direction} {abs(sl_pct):.2f}%"
             avg_tp_pct = sum(((tp - entry) / entry * 100) for tp in tp_prices) / len(tp_prices)
             tp_direction = "⬆️" if avg_tp_pct > 0 else "⬇️"
@@ -342,11 +353,11 @@ class BybitTradingBot:
             return True, success_msg
             
         except Exception as e:
-            error_msg = f"""❌ *Order Failed!*
+            error_msg = f"""❌ Error processing instruction:
 
-*Error:* {str(e)}
+Error: {str(e)}
 
-*Please check:*
+Please check:
 • Available balance
 • Position size
 • Leverage settings

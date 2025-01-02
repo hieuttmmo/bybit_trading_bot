@@ -34,7 +34,7 @@ load_dotenv(dotenv_path=ENV_FILE)
 
 # Get Telegram token from environment variable
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-ALLOWED_USER_IDS = [int(id.strip()) for id in os.getenv('ALLOWED_TELEGRAM_USERS', '').split(',') if id.strip()]
+ALLOWED_USER_IDS = [int(id.split('#')[0].strip()) for id in os.getenv('ALLOWED_TELEGRAM_USERS', '').split(',') if id.strip()]
 
 if not TELEGRAM_TOKEN:
     raise ValueError(f"Please set TELEGRAM_TOKEN in your .env file at {ENV_FILE}")
@@ -66,18 +66,12 @@ def get_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton(f"🌍 {env} Mode", callback_data='switch_env')],
         [InlineKeyboardButton(balance_text, callback_data='balance_info')],
-        [
-            InlineKeyboardButton("📊 Trading", callback_data='menu_trading'),
-            InlineKeyboardButton("⚙️ Quick Trade", callback_data='quick_trade')
-        ],
+        [InlineKeyboardButton("📊 Trading", callback_data='menu_trading')],
         [
             InlineKeyboardButton("📈 Positions", callback_data='view_positions'),
             InlineKeyboardButton("⚙️ Settings", callback_data='menu_settings')
         ],
-        [
-            InlineKeyboardButton("📊 Statistics", callback_data='menu_stats'),
-            InlineKeyboardButton("❓ Help", callback_data='menu_help')
-        ]
+        [InlineKeyboardButton("❓ Help", callback_data='menu_help')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -773,6 +767,17 @@ def get_quick_trade_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def calculate_risk_level(liq_distance: float) -> str:
+    """Calculate risk level based on liquidation distance percentage."""
+    if liq_distance >= 50:
+        return "🟢 LOW RISK"
+    elif liq_distance >= 25:
+        return "🟡 MEDIUM RISK"
+    elif liq_distance >= 10:
+        return "🔴 HIGH RISK"
+    else:
+        return "💀 EXTREME RISK"
+
 def format_position_message(pos) -> str:
     """Enhanced position message formatting."""
     # Calculate duration
@@ -784,15 +789,10 @@ def format_position_message(pos) -> str:
     except:
         duration_str = "N/A"
 
-    # Calculate risk level
+    # Calculate risk level based on liquidation distance
     try:
         distance_to_liq = abs(pos['current_price'] - pos['liq_price']) / pos['current_price'] * 100
-        if distance_to_liq < 5:
-            risk_level = "🔴 HIGH RISK"
-        elif distance_to_liq < 15:
-            risk_level = "🟡 MEDIUM RISK"
-        else:
-            risk_level = "🟢 LOW RISK"
+        risk_level = calculate_risk_level(distance_to_liq)
     except:
         risk_level = "⚪️ UNKNOWN"
 
@@ -819,165 +819,102 @@ def format_position_message(pos) -> str:
     return message
 
 def format_positions_message(positions: list) -> str:
-    """Format positions list into a readable message."""
+    """Format positions list into a readable message with comprehensive position data."""
     if not positions:
-        return "No active positions found"
+        return "📊 No active positions found"
         
-    # Calculate total PnL and position value
+    # Calculate totals
     total_unrealised_pnl = sum(float(pos.get('unrealisedPnl', '0')) for pos in positions)
     total_position_value = sum(float(pos.get('positionValue', '0')) for pos in positions)
-    total_realised_pnl = sum(float(pos.get('cumRealisedPnl', '0')) for pos in positions)
+    total_margin = sum(float(pos.get('positionIM', '0')) for pos in positions)
     
     # Format header with totals
-    message = "📊 Active Positions Summary:\n\n"
+    message = "📊 POSITIONS SUMMARY\n" + "=" * 40 + "\n\n"
     message += f"💰 Total Unrealized PNL: {format_number(total_unrealised_pnl)} USDT\n"
-    message += f"💵 Total Realized PNL: {format_number(total_realised_pnl)} USDT\n"
     message += f"📊 Total Position Value: {format_number(total_position_value)} USDT\n"
+    message += f"💫 Total Initial Margin: {format_number(total_margin)} USDT\n"
     message += f"📈 Active Positions: {len(positions)}\n\n"
     message += "=" * 40 + "\n"
     
     # Format each position
     for pos in positions:
         try:
-           
-            # Basic position information
-            side_emoji = "🟢" if pos.get('side') == "Buy" else "🔴"
+            # Extract basic position information
             symbol = pos.get('symbol', 'Unknown')
+            side = pos.get('side', 'Unknown')
+            side_emoji = "🟢" if side == "Buy" else "🔴"
+            position_status = pos.get('positionStatus', 'Normal')
+            
+            # Position size and value
             size = float(pos.get('size', '0'))
-            avg_price = float(pos.get('avgPrice', '0'))
-            mark_price = float(pos.get('markPrice', '0'))
-            
-            # PNL information
-            unrealised_pnl = float(pos.get('unrealisedPnl', '0'))
             position_value = float(pos.get('positionValue', '0'))
-            cur_realised_pnl = float(pos.get('curRealisedPnl', '0'))
-            cum_realised_pnl = float(pos.get('cumRealisedPnl', '0'))
+            leverage = pos.get('leverage', '1')
             
-            # Calculate PnL percentage
+            # Price information
+            entry_price = float(pos.get('avgPrice', '0'))
+            mark_price = float(pos.get('markPrice', '0'))
+            liq_price = pos.get('liqPrice', '')
+            
+            # PNL calculations
+            unrealised_pnl = float(pos.get('unrealisedPnl', '0'))
+            cum_realised_pnl = float(pos.get('cumRealisedPnl', '0'))
             pnl_percentage = (unrealised_pnl / position_value * 100) if position_value > 0 else 0
             
-            # Position details
-            leverage = pos.get('leverage', '1')
-            liq_price = pos.get('liqPrice', '')
-            bust_price = pos.get('bustPrice', '')
+            # Margin information
+            position_mm = float(pos.get('positionMM', '0'))  # Maintenance margin
+            position_im = float(pos.get('positionIM', '0'))  # Initial margin
             
-            # # Margin information
-            # position_mm = float(pos.get('positionMM', '0'))  # Maintenance margin
-            # position_im = float(pos.get('positionIM', '0'))  # Initial margin
-            # position_balance = float(pos.get('positionBalance', '0'))  # Position margin
+            # Format position header
+            message += f"\n{side_emoji} {side.upper()} {symbol}\n"
             
-            # # Risk information
-            # position_status = pos.get('positionStatus', 'Normal')
-            # adl_rank = int(pos.get('adlRankIndicator', '0'))
-            # auto_margin = int(pos.get('autoAddMargin', '0')) == 1
-            # risk_id = int(pos.get('riskId', '1'))
-            # risk_limit = float(pos.get('riskLimitValue', '0'))
-            # is_reduce_only = bool(pos.get('isReduceOnly', False))
-            # trade_mode = "Cross" if int(pos.get('tradeMode', '0')) == 0 else "Isolated"
+            # Position status and mode
+            status_emoji = "✅" if position_status == "Normal" else "⚠️" if position_status == "Liq" else "⛔️"
+            message += f"Status: {status_emoji} {position_status}\n"
             
-            # Format position details
-            message += f"{side_emoji} {pos.get('side', 'Unknown')} {symbol}\n\n"
-            
-            # PNL Information with proper negative number formatting
-            message += f"💰 Unrealized PNL: {format_number(unrealised_pnl)} USDT ({format_number(pnl_percentage, 2)}%)\n"
-            message += f"💵 Current Realized PNL: {format_number(cur_realised_pnl)} USDT\n"
+            # PNL section
+            pnl_emoji = "📈" if unrealised_pnl > 0 else "📉"
+            message += f"\n💰 Unrealized PNL: {pnl_emoji} {format_number(unrealised_pnl)} USDT ({format_number(pnl_percentage, 2)}%)\n"
             message += f"💵 Cumulative Realized PNL: {format_number(cum_realised_pnl)} USDT\n"
-            message += f"📊 Position Value: {format_number(position_value)} USDT\n"
-            message += f"📐 Size: {format_number(size, 3)} {symbol.replace('USDT', '')}\n\n"
             
-            # Price Information
-            message += f"📍 Entry: {format_number(avg_price)} USDT\n"
-            message += f"💹 Mark: {format_number(mark_price)} USDT\n"
+            # Position details
+            message += f"\n📊 Position Details:\n"
+            message += f"• Size: {format_number(size, 4)} {symbol.replace('USDT', '')}\n"
+            message += f"• Value: {format_number(position_value)} USDT\n"
+            message += f"• Leverage: {leverage}x\n"
             
-            # # Position Status and Risk
-            # message += f"\n📊 Status: {position_status}"
-            # if is_reduce_only:
-            #     message += " (Reduce Only)"
-            # message += f"\n💫 Mode: {trade_mode}"
-            # if adl_rank > 0:
-            #     message += f"\n⚠️ ADL Rank: {adl_rank}"
-            # if auto_margin:
-            #     message += f"\n🔄 Auto-Add Margin: Enabled"
-            
-            # # Margin Information
-            # message += f"\n💫 Initial Margin: {format_number(position_im)} USDT"
-            # message += f"\n💫 Maintenance Margin: {format_number(position_mm)} USDT"
-            # if position_balance > 0:
-            #     message += f"\n💫 Position Margin: {format_number(position_balance)} USDT"
-            # message += f"\n🛡️ Risk Limit: {format_number(risk_limit, 0)} USDT (Level {risk_id})"
-            
-            # # TP/SL Information
-            # tpsl_mode = pos.get('tpslMode', 'Full')
-            # take_profit = pos.get('takeProfit', '')
-            # stop_loss = pos.get('stopLoss', '')
-            # trailing_stop = pos.get('trailingStop', '')
-            
-            # Get TP/SL arrays
-            take_profits = pos.get('takeProfit', [])
-            stop_losses = pos.get('stopLoss', [])
-            
-            # message += f"\n\n🎯 TP/SL Mode: {tpsl_mode}"
-            
-            # Display Take Profits
-            if take_profits:
-                message += "\n🎯 Take Profit Orders:"
-                for i, tp in enumerate(take_profits, 1):
-                    tp_pct = ((float(tp) - avg_price) / avg_price * 100)
-                    tp_direction = "+" if pos.get('side') == "Buy" else "-"
-                    message += f"\n   {i}. {format_number(float(tp))} USDT ({tp_direction}{format_number(abs(tp_pct))}%)"
-            elif take_profits and take_profits != '':
-                tp_pct = ((float(take_profits) - avg_price) / avg_price * 100)
-                tp_direction = "+" if pos.get('side') == "Buy" else "-"
-                message += f"\n🎯 Take Profit: {format_number(float(take_profits))} USDT ({tp_direction}{format_number(abs(tp_pct))}%)"
-            
-            # Display Stop Losses
-            if stop_losses:
-                message += "\n🛑 Stop Loss Orders:"
-                for i, sl in enumerate(stop_losses, 1):
-                    sl_pct = ((float(sl) - avg_price) / avg_price * 100)
-                    sl_direction = "-" if pos.get('side') == "Buy" else "+"
-                    message += f"\n   {i}. {format_number(float(sl))} USDT ({sl_direction}{format_number(abs(sl_pct))}%)"
-            elif stop_loss and stop_loss != '':
-                sl_pct = ((float(stop_loss) - avg_price) / avg_price * 100)
-                sl_direction = "-" if pos.get('side') == "Buy" else "+"
-                message += f"\n🛑 Stop Loss: {format_number(float(stop_loss))} USDT ({sl_direction}{format_number(abs(sl_pct))}%)"
-            
-            if trailing_stop and trailing_stop != '0':
-                message += f"\n📍 Trailing Stop: {format_number(float(trailing_stop))} USDT"
-            
-            # Liquidation Information
+            # Price information
+            message += f"\n💹 Price Information:\n"
+            message += f"• Entry: {format_number(entry_price)} USDT\n"
+            message += f"• Mark: {format_number(mark_price)} USDT\n"
             if liq_price and liq_price != '':
-                liq_pct = abs((float(liq_price) - avg_price) / avg_price * 100)
-                message += f"\n⚠️ Liq. Price: {format_number(float(liq_price))} USDT ({format_number(liq_pct)}% away)"
-            if bust_price and bust_price != '':
-                bust_pct = abs((float(bust_price) - avg_price) / avg_price * 100)
-                message += f"\n💀 Bankruptcy Price: {format_number(float(bust_price))} USDT ({format_number(bust_pct)}% away)"
-            
-            message += f"\n\n🔧 Leverage: {leverage}x"
-            
-            # Add risk level indicator
-            if float(leverage) <= 5:
-                message += "\n⚠️ Risk Level: 🟢 LOW RISK"
-            elif float(leverage) <= 10:
-                message += "\n⚠️ Risk Level: 🟡 MEDIUM RISK"
+                liq_distance = abs((float(liq_price) - mark_price) / mark_price * 100)
+                message += f"• Liquidation: {format_number(float(liq_price))} USDT ({format_number(liq_distance, 2)}% away)\n"
+                
+                # Calculate risk level based on liquidation distance
+                risk_level = calculate_risk_level(liq_distance)
             else:
-                message += "\n⚠️ Risk Level: 🔴 HIGH RISK"
+                risk_level = "⚪️ UNKNOWN"
             
-            # Add position duration
+            # Margin information
+            message += f"\n💫 Margin Information:\n"
+            message += f"• Initial Margin: {format_number(position_im)} USDT\n"
+            message += f"• Maintenance Margin: {format_number(position_mm)} USDT\n"
+            
+            # Risk assessment
+            message += f"\n⚠️ Risk Level: {risk_level}\n"
+            
+            # Position duration
             try:
-                created_time = int(pos.get('createdTime', '0')) / 1000  # Convert to seconds
+                created_time = int(pos.get('createdTime', '0')) / 1000
                 if created_time > 0:
                     from datetime import datetime
                     duration = datetime.now() - datetime.fromtimestamp(created_time)
-                    days = duration.days
-                    hours = duration.seconds // 3600
-                    minutes = (duration.seconds % 3600) // 60
-                    duration_str = f"{days}d {hours}h {minutes}m"
-                    message += f"\n⏱️ Duration: {duration_str}"
+                    duration_str = f"{duration.days}d {duration.seconds//3600}h {(duration.seconds//60)%60}m"
+                    message += f"⏱️ Duration: {duration_str}\n"
             except Exception as e:
                 print(f"Error calculating duration: {str(e)}")
             
-            message += "\n" + "=" * 40 + "\n"
+            message += "=" * 40 + "\n"
             
         except Exception as e:
             print(f"Error formatting position {pos.get('symbol', 'Unknown')}: {str(e)}")
