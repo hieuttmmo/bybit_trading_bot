@@ -7,7 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/bybit_trading_bot
 Environment=PATH=/home/ubuntu/bybit_trading_bot/venv/bin
-ExecStart=/home/ubuntu/bybit_trading_bot/venv/bin/python telegram_bot.py
+ExecStart=/home/ubuntu/bybit_trading_bot/venv/bin/python -m src.bot.telegram
 Restart=always
 RestartSec=10
 
