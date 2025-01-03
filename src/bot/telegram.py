@@ -8,6 +8,7 @@ from .trading import process_instruction, BybitTradingBot
 from .config import ConfigManager
 from typing import Tuple, List
 import pathlib
+from datetime import datetime
 
 # Get the absolute path to the config directory
 CONFIG_DIR = pathlib.Path(__file__).parent.parent.parent / 'config'
@@ -45,6 +46,18 @@ if not ALLOWED_USER_IDS:
 # Initialize config manager with specific config file
 config_manager = ConfigManager(config_file=CONFIG_FILE)
 
+# Initialize bot instance once
+trading_bot = None
+
+def initialize_trading_bot():
+    """Initialize or reinitialize the trading bot with current config."""
+    global trading_bot
+    trading_bot = BybitTradingBot(config_manager)
+    return trading_bot
+
+# Initial bot initialization
+trading_bot = initialize_trading_bot()
+
 # States for conversation handler
 AWAITING_API_KEY, AWAITING_API_SECRET, AWAITING_LEVERAGE, AWAITING_BALANCE_PERCENTAGE, AWAITING_CLOSE_PERCENTAGE = range(5)
 
@@ -55,11 +68,11 @@ def is_authorized(user_id: int) -> bool:
 def get_main_menu_keyboard():
     """Get the enhanced main menu keyboard with status."""
     try:
-        bot = BybitTradingBot()
-        balance = bot.get_wallet_balance()
+        balance = trading_bot.get_wallet_balance()
         env = config_manager.get_environment().upper()
         balance_text = f"💰 Balance: ${format_number(balance)} USDT"
-    except:
+    except Exception as e:
+        print(f"Error fetching balance: {str(e)}")
         balance_text = "💰 Balance: Loading..."
         env = "UNKNOWN"
 
@@ -197,12 +210,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     data = query.data
-
+    
     if data == 'menu_main':
         await query.edit_message_text(
-            "🏠 Main Menu - Please select an option:",
+            "Main Menu:",
             reply_markup=get_main_menu_keyboard()
         )
+    
+    elif data == 'switch_env':
+        # Show environment selection keyboard
+        await query.edit_message_text(
+            "🌍 Select Environment:",
+            reply_markup=get_environment_keyboard()
+        )
+    
+    elif data.startswith('switch_'):
+        env = data.split('_')[1]
+        use_testnet = env == 'testnet'
+        try:
+            # Switch environment in config
+            config_manager.switch_environment(use_testnet)
+            
+            # Reinitialize the trading bot with new environment
+            initialize_trading_bot()
+            
+            # Get current balance to show in message
+            try:
+                balance = trading_bot.get_wallet_balance()
+                balance_text = f"\nBalance: ${format_number(balance)} USDT"
+            except:
+                balance_text = "\nFetching balance..."
+            
+            # Create a unique message each time
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            await query.edit_message_text(
+                f"✅ Switched to {env.upper()} mode at {timestamp}{balance_text}\n\nMain Menu:",
+                reply_markup=get_main_menu_keyboard()  # Return to main menu after switching
+            )
+        except Exception as e:
+            await query.edit_message_text(
+                f"❌ Error switching to {env.upper()}: {str(e)}\n\nMain Menu:",
+                reply_markup=get_main_menu_keyboard()  # Return to main menu on error
+            )
     
     elif data == 'quick_trade':
         await query.edit_message_text(
@@ -217,7 +266,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         try:
             # Get current market price
-            bot = BybitTradingBot()
             params = config_manager.get_trading_params()
             
             # Format the instruction
@@ -225,7 +273,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             instruction = f"{side} ${symbol}\nEntry 0\n"  # 0 means market price
             
             # Calculate stop loss (2% for now)
-            current_price = bot.get_market_price(symbol)
+            current_price = trading_bot.get_market_price(symbol)
             sl_price = current_price * 0.98 if direction == "buy" else current_price * 1.02
             instruction += f"Stl {sl_price:.1f}\n"
             
@@ -239,7 +287,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             instruction += f"Tp {tp1:.1f} - {tp2:.1f}"
             
             # Process the quick trade
-            result = process_instruction(instruction)
+            success, result = process_instruction(instruction, trading_bot)
             
             # Show result and positions
             positions_message, keyboard = get_active_positions()
@@ -256,9 +304,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     elif data == 'balance_info':
         try:
-            bot = BybitTradingBot()
-            balance = bot.get_wallet_balance()
-            positions = bot.get_active_positions()
+            
+            balance = trading_bot.get_wallet_balance()
+            positions = trading_bot.get_active_positions()
             
             total_pnl = sum(pos['unrealized_pnl'] for pos in positions)
             total_position_value = sum(pos['position_value'] for pos in positions)
@@ -364,21 +412,6 @@ Select an option:"""
             [InlineKeyboardButton("« Back to Main Menu", callback_data='menu_main')]
         ]
         await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    elif data == 'switch_env':
-        await query.edit_message_text(
-            "🌍 Select Environment:",
-            reply_markup=get_environment_keyboard()
-        )
-    
-    elif data.startswith('switch_'):
-        env = data.split('_')[1]
-        use_testnet = env == 'testnet'
-        config_manager.switch_environment(use_testnet)
-        await query.edit_message_text(
-            f"Switched to {env.upper()} ✅\n\nSettings Menu:",
-            reply_markup=get_settings_keyboard()
-        )
     
     elif data == 'setup_api':
         await query.edit_message_text(
@@ -593,20 +626,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     message = update.message.text
-    
-    # Process the trading instruction
     try:
-        success, result = process_instruction(message)
+        success, result = process_instruction(message, trading_bot)
         await update.message.reply_text(
             result,
-            parse_mode=ParseMode.MARKDOWN,  # Enable markdown formatting
-            reply_markup=get_trading_keyboard()  # Show trading menu after processing
+            parse_mode=None,  # Disable markdown formatting
+            reply_markup=get_trading_keyboard()
         )
     except Exception as e:
         await update.message.reply_text(
-            f"❌ *Error processing instruction:*\n{str(e)}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_trading_keyboard()  # Show trading menu even on error
+            f"Error processing instruction: {str(e)}",
+            parse_mode=None,  # Disable markdown formatting
+            reply_markup=get_trading_keyboard()
         )
 
 async def start_position_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -666,8 +697,8 @@ async def handle_close_percentage(update: Update, context: ContextTypes.DEFAULT_
                 return AWAITING_CLOSE_PERCENTAGE
         
         # Close position
-        bot = BybitTradingBot()
-        success, message = bot.close_position(symbol, percentage)
+        
+        success, message = trading_bot.close_position(symbol, percentage)
         
         # Send result
         if success:
@@ -709,8 +740,7 @@ async def handle_close_percentage(update: Update, context: ContextTypes.DEFAULT_
 def get_trading_history() -> str:
     """Get trading history from Bybit."""
     try:
-        bot = BybitTradingBot()
-        history = bot.get_trading_history()
+        history = trading_bot.get_trading_history()
         
         if not history:
             return "No trading history found."
@@ -925,8 +955,8 @@ def format_positions_message(positions: list) -> str:
 def get_active_positions() -> Tuple[str, List[List[InlineKeyboardButton]]]:
     """Enhanced get and format active positions."""
     try:
-        bot = BybitTradingBot()
-        positions = bot.get_active_positions()
+        
+        positions = trading_bot.get_active_positions()
         
         # Format the positions message
         message = format_positions_message(positions)
@@ -987,8 +1017,8 @@ async def execute_close_all_positions(update: Update, context: ContextTypes.DEFA
     )
     
     try:
-        bot = BybitTradingBot()
-        success, message = bot.close_all_positions()
+        
+        success, message = trading_bot.close_all_positions()
         
         # Get updated positions
         positions_message, keyboard = get_active_positions()

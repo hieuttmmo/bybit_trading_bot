@@ -9,19 +9,23 @@ import json
 from datetime import datetime
 
 # Initialize config manager
-config_manager = ConfigManager()
+# config_manager = ConfigManager()
 
 class BybitTradingBot:
-    def __init__(self):
-        # Load configuration
-        api_key, api_secret = config_manager.get_active_api_keys()
+    def __init__(self, config_manager):
+        """Initialize the BybitTradingBot with configuration."""
+        self.config_manager = config_manager
+        self.trading_params = config_manager.get_trading_params()
         
-        if not api_key or not api_secret:
-            raise ValueError("API keys not configured. Please use /setapi command to configure them.")
-
-        # Initialize Bybit client
+        # Get API keys based on environment
+        api_key, api_secret = config_manager.get_active_api_keys()
+        is_testnet = config_manager.get_environment() == 'testnet'
+        
+        print(f"Trading bot initialized in {'testnet' if is_testnet else 'mainnet'} mode")
+        
+        # Initialize Bybit session
         self.session = HTTP(
-            testnet=config_manager.get_environment() == 'testnet',
+            testnet=is_testnet,
             api_key=api_key,
             api_secret=api_secret
         )
@@ -593,12 +597,11 @@ Please check:
         except Exception as e:
             raise Exception(f"Error getting market price: {str(e)}")
 
-def process_instruction(instruction: str):
+def process_instruction(instruction: str, trading_bot: BybitTradingBot):
     """Process the trading instruction and execute the trade."""
-    bot = BybitTradingBot()
     try:
-        action, symbol, entry, stl, tp_prices = bot.parse_instruction(instruction)
-        success, message = bot.place_order(action, symbol, entry, stl, tp_prices)
+        action, symbol, entry, stl, tp_prices = trading_bot.parse_instruction(instruction)
+        success, message = trading_bot.place_order(action, symbol, entry, stl, tp_prices)
         return success, message
     except Exception as e:
         return False, f"Error processing instruction: {str(e)}"

@@ -4,7 +4,7 @@ from src.bot.trading import BybitTradingBot, process_instruction
 
 class TestBybitTradingBot(unittest.TestCase):
     def setUp(self):
-        self.bot = BybitTradingBot()
+        self.bot = BybitTradingbot(config_manager)
         
     @patch('src.bot.trading.BybitTradingBot.get_instrument_info')
     @patch('src.bot.trading.BybitTradingBot.set_leverage')

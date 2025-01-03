@@ -5,6 +5,7 @@
     "active_api": "testnet",
     "trading_params": {
         "leverage": 20,
-        "balance_percentage": 0.1
-    }
+        "balance_percentage": 0.05
+    },
+    "environment": "mainnet"
 }
